@@ -1,7 +1,9 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.feedback import Feedback
+from app.models.transaction import Transaction
 from app.schemas.feedback import FeedbackCreate
 
 
@@ -14,6 +16,26 @@ def create_feedback(
     feedback_data: FeedbackCreate,
 ) -> Feedback:
 
+    # ------------------------------------------------------
+    # Verify transaction exists
+    # ------------------------------------------------------
+
+    transaction = db.scalar(
+        select(Transaction).where(
+            Transaction.transaction_id
+            == feedback_data.transaction_id
+        )
+    )
+
+    if not transaction:
+        raise ValueError(
+            "Transaction not found."
+        )
+
+    # ------------------------------------------------------
+    # Build feedback
+    # ------------------------------------------------------
+
     feedback = Feedback(
         transaction_id=feedback_data.transaction_id,
         customer_id=feedback_data.customer_id,
@@ -24,6 +46,10 @@ def create_feedback(
         reason=feedback_data.reason,
     )
 
+    # ------------------------------------------------------
+    # Persist safely
+    # ------------------------------------------------------
+
     try:
 
         db.add(feedback)
@@ -33,6 +59,15 @@ def create_feedback(
         db.refresh(feedback)
 
         return feedback
+
+    except IntegrityError as exc:
+
+        db.rollback()
+
+        raise ValueError(
+            "Feedback could not be created because "
+            "a database constraint was violated."
+        ) from exc
 
     except Exception:
 

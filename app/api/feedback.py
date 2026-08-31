@@ -34,10 +34,26 @@ def create_feedback_endpoint(
     db: Session = Depends(get_db),
 ):
 
-    return create_feedback(
-        db=db,
-        feedback_data=feedback,
-    )
+    try:
+
+        return create_feedback(
+            db=db,
+            feedback_data=feedback,
+        )
+
+    except ValueError as exc:
+
+        if str(exc) == "Transaction not found.":
+
+            raise HTTPException(
+                status_code=404,
+                detail=str(exc),
+            )
+
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        )
 
 
 # ==========================================================
