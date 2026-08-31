@@ -5,10 +5,19 @@ from app.models.transaction import Transaction
 from app.schemas.transaction import TransactionCreate
 
 
+# ==========================================================
+# CREATE TRANSACTION
+# ==========================================================
+
 def create_transaction(
     db: Session,
     transaction_data: TransactionCreate,
 ) -> Transaction:
+    """
+    Create and persist a transaction in RDS.
+
+    A transaction_id must be unique.
+    """
 
     existing_transaction = db.scalar(
         select(Transaction).where(
@@ -40,17 +49,29 @@ def create_transaction(
         transaction_metadata=transaction_data.metadata,
     )
 
-    db.add(transaction)
-    db.commit()
-    db.refresh(transaction)
+    try:
+        db.add(transaction)
+        db.commit()
+        db.refresh(transaction)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return transaction
 
+
+# ==========================================================
+# GET SINGLE TRANSACTION
+# ==========================================================
 
 def get_transaction(
     db: Session,
     transaction_id: str,
 ) -> Transaction | None:
+    """
+    Retrieve a transaction using its transaction_id.
+    """
 
     return db.scalar(
         select(Transaction).where(
@@ -60,17 +81,76 @@ def get_transaction(
     )
 
 
+# ==========================================================
+# GET TRANSACTIONS
+# ==========================================================
+
 def get_transactions(
     db: Session,
     skip: int = 0,
     limit: int = 100,
 ) -> list[Transaction]:
+    """
+    Retrieve transactions with pagination.
+    """
 
     return list(
         db.scalars(
             select(Transaction)
-            .order_by(Transaction.created_at.desc())
+            .order_by(
+                Transaction.created_at.desc()
+            )
             .offset(skip)
             .limit(limit)
         )
     )
+
+
+# ==========================================================
+# GET CUSTOMER TRANSACTIONS
+# ==========================================================
+
+def get_customer_transactions(
+    db: Session,
+    customer_id: str,
+    skip: int = 0,
+    limit: int = 100,
+) -> list[Transaction]:
+    """
+    Retrieve transactions belonging to a customer.
+    """
+
+    return list(
+        db.scalars(
+            select(Transaction)
+            .where(
+                Transaction.customer_id
+                == customer_id
+            )
+            .order_by(
+                Transaction.timestamp.desc()
+            )
+            .offset(skip)
+            .limit(limit)
+        )
+    )
+
+
+# ==========================================================
+# TRANSACTION EXISTS
+# ==========================================================
+
+def transaction_exists(
+    db: Session,
+    transaction_id: str,
+) -> bool:
+    """
+    Check whether a transaction already exists.
+    """
+
+    statement = select(Transaction.id).where(
+        Transaction.transaction_id
+        == transaction_id
+    )
+
+    return db.scalar(statement) is not None

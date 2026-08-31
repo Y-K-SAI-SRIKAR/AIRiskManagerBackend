@@ -1,14 +1,14 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, JSON, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.connection import Base
 
 
-class Transaction(Base):
-    __tablename__ = "transactions"
+class AnalysisResult(Base):
+    __tablename__ = "analysis_results"
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -18,8 +18,9 @@ class Transaction(Base):
 
     transaction_id: Mapped[str] = mapped_column(
         String(100),
-        unique=True,
+        ForeignKey("transactions.transaction_id"),
         nullable=False,
+        unique=True,
         index=True,
     )
 
@@ -29,70 +30,62 @@ class Transaction(Base):
         index=True,
     )
 
-    amount: Mapped[float] = mapped_column(
-        Numeric,
+    success: Mapped[bool] = mapped_column(
         nullable=False,
     )
 
-    currency: Mapped[str] = mapped_column(
-        String(3),
-        nullable=False,
-        default="INR",
-    )
-
-    merchant_id: Mapped[str | None] = mapped_column(
-        String(100),
+    risk_level: Mapped[str | None] = mapped_column(
+        String(30),
         nullable=True,
-    )
-
-    merchant_category: Mapped[str | None] = mapped_column(
-        String(100),
-        nullable=True,
-    )
-
-    transaction_type: Mapped[str | None] = mapped_column(
-        String(50),
-        nullable=True,
-    )
-
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime,
-        nullable=False,
         index=True,
     )
 
-    device_id: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    ip_address: Mapped[str | None] = mapped_column(
-        String(45),
-        nullable=True,
-    )
-
-    location: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    country: Mapped[str | None] = mapped_column(
-        String(100),
-        nullable=True,
-    )
-
-    channel: Mapped[str | None] = mapped_column(
+    action: Mapped[str | None] = mapped_column(
         String(50),
         nullable=True,
     )
 
-    features: Mapped[dict[str, Any]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=dict,
+    confidence: Mapped[float | None] = mapped_column(
+        Numeric,
+        nullable=True,
     )
 
-    transaction_metadata: Mapped[dict[str, Any]] = mapped_column(
+    ml_risk_score: Mapped[float | None] = mapped_column(
+        Numeric,
+        nullable=True,
+    )
+
+    anomaly_detected: Mapped[bool | None] = mapped_column(
+        nullable=True,
+    )
+
+    velocity_risk: Mapped[float | None] = mapped_column(
+        Numeric,
+        nullable=True,
+    )
+
+    customer_risk: Mapped[float | None] = mapped_column(
+        Numeric,
+        nullable=True,
+    )
+
+    transaction_risk: Mapped[float | None] = mapped_column(
+        Numeric,
+        nullable=True,
+    )
+
+    triggered_rules: Mapped[list[Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+
+    explanation: Mapped[str | None] = mapped_column(
+        String(2000),
+        nullable=True,
+    )
+
+    analysis_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
         JSON,
         nullable=False,
