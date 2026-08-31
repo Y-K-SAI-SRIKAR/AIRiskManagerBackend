@@ -4,13 +4,18 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     HTTPException,
     UploadFile,
     status,
 )
+from sqlalchemy.orm import Session
+
+from app.database.connection import get_db
 
 from app.services.agent_service import agent_service
+from app.services.analysis_service import analysis_service
 from app.services.csv_service import csv_service
 from app.services.s3_service import s3_service
 
@@ -24,13 +29,6 @@ router = APIRouter(
 # ==========================================================
 # Dataset-only Columns
 # ==========================================================
-#
-# These columns may exist in the uploaded CSV dataset,
-# but they are NOT required by the ML inference service.
-#
-# They are accepted by the Backend and ignored when
-# constructing the Agent /analyze payload.
-#
 
 NON_INFERENCE_COLUMNS = {
     "isFraud",
@@ -41,16 +39,6 @@ NON_INFERENCE_COLUMNS = {
 # ==========================================================
 # Expected ML Features
 # ==========================================================
-#
-# The deployed ML model expects exactly these 117
-# inference features.
-#
-# The Backend uses this list to construct the features
-# object sent to Agent /analyze.
-#
-# For /analyze/batch, the ORIGINAL CSV is forwarded
-# directly to the Agent.
-#
 
 EXPECTED_ML_FEATURES = {
     "TransactionDT",
@@ -182,9 +170,6 @@ EXPECTED_ML_FEATURES = {
 # ==========================================================
 # Generic User-Facing Error
 # ==========================================================
-#
-# Do not expose internal ML feature names to the frontend.
-#
 
 INVALID_CSV_FORMAT = (
     "CSV format is invalid. "
@@ -200,10 +185,6 @@ INVALID_CSV_FORMAT = (
 def _convert_value(
     value: Any,
 ) -> Any:
-    """
-    Convert a CSV string value into an appropriate
-    Python value before sending it to the Agent.
-    """
 
     if value is None:
         return None
@@ -213,15 +194,14 @@ def _convert_value(
     if value == "":
         return None
 
-    # Boolean values
     if value.lower() == "true":
         return True
 
     if value.lower() == "false":
         return False
 
-    # Integer values
     try:
+
         if (
             value.isdigit()
             or (
@@ -234,7 +214,6 @@ def _convert_value(
     except Exception:
         pass
 
-    # Float values
     try:
         return float(value)
 
@@ -249,26 +228,8 @@ def _convert_value(
 def _build_ml_features(
     row: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Extract the 117 ML inference features from one CSV row.
-
-    Accepted dataset-only columns:
-
-        isFraud
-        TransactionAmt_Bin
-
-    are ignored.
-
-    Missing or unexpected columns are converted into a
-    generic CSV validation error so internal ML schema
-    details are not exposed to the client.
-    """
 
     actual_columns = set(row.keys())
-
-    # ------------------------------------------------------
-    # Check required ML features
-    # ------------------------------------------------------
 
     missing = (
         EXPECTED_ML_FEATURES
@@ -279,10 +240,6 @@ def _build_ml_features(
         raise ValueError(
             INVALID_CSV_FORMAT
         )
-
-    # ------------------------------------------------------
-    # Check unexpected columns
-    # ------------------------------------------------------
 
     unexpected = (
         actual_columns
@@ -295,13 +252,10 @@ def _build_ml_features(
             INVALID_CSV_FORMAT
         )
 
-    # ------------------------------------------------------
-    # Convert feature values
-    # ------------------------------------------------------
-
     features: dict[str, Any] = {}
 
     for feature in EXPECTED_ML_FEATURES:
+
         features[feature] = _convert_value(
             row[feature]
         )
@@ -317,20 +271,11 @@ def _build_agent_transaction(
     row: dict[str, Any],
     row_index: int,
 ) -> dict[str, Any]:
-    """
-    Convert one model CSV row into the JSON structure
-    expected by Agent /analyze.
-
-    The uploaded CSV contains the ML model features.
-
-    The Backend creates the surrounding transaction
-    structure required by Agent /analyze.
-    """
 
     features = _build_ml_features(row)
 
     # ------------------------------------------------------
-    # Transaction Amount
+    # Amount
     # ------------------------------------------------------
 
     amount = features.get(
@@ -343,9 +288,11 @@ def _build_agent_transaction(
         )
 
     try:
+
         amount = float(amount)
 
     except (TypeError, ValueError) as exc:
+
         raise ValueError(
             INVALID_CSV_FORMAT
         ) from exc
@@ -356,24 +303,12 @@ def _build_agent_transaction(
         )
 
     # ------------------------------------------------------
-    # Transaction ID
+    # Generated identifiers
     # ------------------------------------------------------
-    #
-    # The model CSV does not contain transaction_id.
-    # Generate one for the transaction being analyzed.
-    #
 
     transaction_id = (
         f"TXN-{uuid.uuid4().hex[:12].upper()}"
     )
-
-    # ------------------------------------------------------
-    # Customer ID
-    # ------------------------------------------------------
-    #
-    # The model CSV does not contain customer_id.
-    # Generate one for this analysis.
-    #
 
     customer_id = (
         f"CUSTOMER-{uuid.uuid4().hex[:12].upper()}"
@@ -382,13 +317,6 @@ def _build_agent_transaction(
     # ------------------------------------------------------
     # Timestamp
     # ------------------------------------------------------
-    #
-    # TransactionDT is a relative timestamp from the
-    # model dataset.
-    #
-    # Convert it into a valid datetime expected by
-    # TransactionRequest.
-    #
 
     transaction_dt = features.get(
         "TransactionDT"
@@ -400,11 +328,13 @@ def _build_agent_transaction(
         )
 
     try:
+
         transaction_dt = float(
             transaction_dt
         )
 
     except (TypeError, ValueError) as exc:
+
         raise ValueError(
             INVALID_CSV_FORMAT
         ) from exc
@@ -426,7 +356,7 @@ def _build_agent_transaction(
     )
 
     # ------------------------------------------------------
-    # Agent Transaction Payload
+    # Agent payload
     # ------------------------------------------------------
 
     return {
@@ -475,24 +405,11 @@ def _build_agent_transaction(
 )
 async def analyze_single(
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ):
-    """
-    Analyze exactly one transaction from a CSV file.
-
-    Expected CSV:
-
-        117 ML inference columns
-
-    Optional:
-
-        isFraud
-        TransactionAmt_Bin
-
-    The two optional dataset columns are ignored.
-    """
 
     # ------------------------------------------------------
-    # Validate filename
+    # Validate file
     # ------------------------------------------------------
 
     if not file.filename:
@@ -507,10 +424,6 @@ async def analyze_single(
             detail="Only CSV files are supported.",
         )
 
-    # ------------------------------------------------------
-    # Read uploaded file
-    # ------------------------------------------------------
-
     file_content = await file.read()
 
     if not file_content:
@@ -522,7 +435,7 @@ async def analyze_single(
     try:
 
         # --------------------------------------------------
-        # Validate that exactly one row exists
+        # Validate exactly one transaction
         # --------------------------------------------------
 
         row = csv_service.validate_single(
@@ -530,7 +443,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Build Agent payload
+        # Build Agent transaction
         # --------------------------------------------------
 
         agent_transaction = (
@@ -547,7 +460,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Save ORIGINAL uploaded CSV to S3
+        # Save original CSV to S3
         # --------------------------------------------------
 
         (
@@ -561,7 +474,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Call Agent /analyze
+        # Call Agent
         # --------------------------------------------------
 
         result = await agent_service.analyze(
@@ -569,7 +482,48 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Return response
+        # Persist transaction
+        # --------------------------------------------------
+        #
+        # We persist the SAME transaction that was sent
+        # to the Agent.
+        #
+        # This is important because analysis_results has
+        # a foreign key to transactions.transaction_id.
+        # --------------------------------------------------
+
+        transaction_create = agent_transaction.copy()
+
+        # Agent metadata is already a dictionary.
+        # No additional transformation is required.
+
+        from app.schemas.transaction import TransactionCreate
+        from app.services.transaction_service import (
+            create_transaction,
+        )
+
+        transaction_data = (
+            TransactionCreate(
+                **transaction_create
+            )
+        )
+
+        create_transaction(
+            db=db,
+            transaction_data=transaction_data,
+        )
+
+        # --------------------------------------------------
+        # Persist analysis result
+        # --------------------------------------------------
+
+        analysis_service.save_analysis(
+            db=db,
+            result=result,
+        )
+
+        # --------------------------------------------------
+        # Return original API contract
         # --------------------------------------------------
 
         return {
@@ -593,6 +547,8 @@ async def analyze_single(
 
     except Exception as exc:
 
+        db.rollback()
+
         raise HTTPException(
             status_code=502,
             detail=f"Analysis failed: {exc}",
@@ -609,28 +565,11 @@ async def analyze_single(
 )
 async def analyze_batch(
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ):
-    """
-    Analyze multiple transactions from a CSV file.
-
-    Expected CSV:
-
-        117 ML inference columns
-
-    Optional:
-
-        isFraud
-        TransactionAmt_Bin
-
-    The original CSV is forwarded directly to:
-
-        Agent /analyze/batch
-
-    The Backend does NOT call the ML service directly.
-    """
 
     # ------------------------------------------------------
-    # Validate filename
+    # Validate file
     # ------------------------------------------------------
 
     if not file.filename:
@@ -644,10 +583,6 @@ async def analyze_batch(
             status_code=400,
             detail="Only CSV files are supported.",
         )
-
-    # ------------------------------------------------------
-    # Read uploaded file
-    # ------------------------------------------------------
 
     file_content = await file.read()
 
@@ -670,12 +605,7 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Validate ML schema for every row
-        #
-        # This happens BEFORE sending the file to Agent.
-        #
-        # Internal feature names are never returned to
-        # the frontend.
+        # Validate ML schema
         # --------------------------------------------------
 
         for row in transactions:
@@ -691,7 +621,7 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Store ORIGINAL CSV in S3
+        # Upload ORIGINAL CSV
         # --------------------------------------------------
 
         (
@@ -705,19 +635,7 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Send ORIGINAL CSV to Agent
-        # --------------------------------------------------
-        #
-        # Important:
-        #
-        # Backend does NOT:
-        #
-        #   - rebuild the CSV
-        #   - convert it to JSON
-        #   - call ML /predict
-        #   - call ML /predict/batch
-        #
-        # Agent owns the complete batch workflow.
+        # Call Agent batch endpoint
         # --------------------------------------------------
 
         result = (
@@ -728,14 +646,21 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Return Agent response unchanged
-        #
-        # This preserves:
-        #
-        #   result_download_url
-        #   report_download_url
-        #
-        # for the frontend.
+        # Persist batch analysis
+        # --------------------------------------------------
+
+        analysis_service.save_batch_analysis(
+            db=db,
+            batch_id=batch_id,
+            transaction_count=len(
+                transactions
+            ),
+            input_s3_location=s3_location,
+            result=result,
+        )
+
+        # --------------------------------------------------
+        # Return original API contract
         # --------------------------------------------------
 
         return {
@@ -762,6 +687,8 @@ async def analyze_batch(
         ) from exc
 
     except Exception as exc:
+
+        db.rollback()
 
         raise HTTPException(
             status_code=502,
