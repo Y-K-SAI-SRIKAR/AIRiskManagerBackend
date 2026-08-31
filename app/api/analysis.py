@@ -7,6 +7,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -18,6 +19,9 @@ from app.services.agent_service import agent_service
 from app.services.analysis_service import analysis_service
 from app.services.csv_service import csv_service
 from app.services.s3_service import s3_service
+from app.services.transaction_service import create_transaction
+
+from app.schemas.transaction import TransactionCreate
 
 
 router = APIRouter(
@@ -396,7 +400,7 @@ def _build_agent_transaction(
 
 
 # ==========================================================
-# Single Transaction Analysis
+# SINGLE TRANSACTION ANALYSIS
 # ==========================================================
 
 @router.post(
@@ -484,28 +488,9 @@ async def analyze_single(
         # --------------------------------------------------
         # Persist transaction
         # --------------------------------------------------
-        #
-        # We persist the SAME transaction that was sent
-        # to the Agent.
-        #
-        # This is important because analysis_results has
-        # a foreign key to transactions.transaction_id.
-        # --------------------------------------------------
 
-        transaction_create = agent_transaction.copy()
-
-        # Agent metadata is already a dictionary.
-        # No additional transformation is required.
-
-        from app.schemas.transaction import TransactionCreate
-        from app.services.transaction_service import (
-            create_transaction,
-        )
-
-        transaction_data = (
-            TransactionCreate(
-                **transaction_create
-            )
+        transaction_data = TransactionCreate(
+            **agent_transaction
         )
 
         create_transaction(
@@ -514,7 +499,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Persist analysis result
+        # Persist analysis
         # --------------------------------------------------
 
         analysis_service.save_analysis(
@@ -523,7 +508,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Return original API contract
+        # Return response
         # --------------------------------------------------
 
         return {
@@ -556,7 +541,7 @@ async def analyze_single(
 
 
 # ==========================================================
-# Batch Transaction Analysis
+# BATCH TRANSACTION ANALYSIS
 # ==========================================================
 
 @router.post(
@@ -621,7 +606,7 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Upload ORIGINAL CSV
+        # Upload original CSV
         # --------------------------------------------------
 
         (
@@ -660,7 +645,7 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Return original API contract
+        # Return response
         # --------------------------------------------------
 
         return {
@@ -694,3 +679,396 @@ async def analyze_batch(
             status_code=502,
             detail=f"Batch analysis failed: {exc}",
         ) from exc
+
+
+# ==========================================================
+# LIST SINGLE ANALYSES
+# ==========================================================
+
+@router.get(
+    "/analysis",
+    tags=["Analysis"],
+)
+def list_analyses(
+    skip: int = Query(
+        default=0,
+        ge=0,
+    ),
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=500,
+    ),
+    db: Session = Depends(get_db),
+):
+
+    analyses = analysis_service.get_analyses(
+        db=db,
+        skip=skip,
+        limit=limit,
+    )
+
+    return {
+        "success": True,
+        "count": len(analyses),
+
+        "analyses": [
+            {
+                "id": analysis.id,
+                "transaction_id": analysis.transaction_id,
+                "customer_id": analysis.customer_id,
+                "success": analysis.success,
+                "risk_level": analysis.risk_level,
+                "action": analysis.action,
+
+                "confidence": (
+                    float(analysis.confidence)
+                    if analysis.confidence is not None
+                    else None
+                ),
+
+                "ml_risk_score": (
+                    float(analysis.ml_risk_score)
+                    if analysis.ml_risk_score is not None
+                    else None
+                ),
+
+                "created_at": analysis.created_at,
+                "updated_at": analysis.updated_at,
+            }
+            for analysis in analyses
+        ],
+    }
+
+
+# ==========================================================
+# LIST BATCH ANALYSES
+# ==========================================================
+
+@router.get(
+    "/analysis/batches",
+    tags=["Analysis"],
+)
+def list_batch_analyses(
+    skip: int = Query(
+        default=0,
+        ge=0,
+    ),
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=500,
+    ),
+    db: Session = Depends(get_db),
+):
+
+    analyses = analysis_service.get_batch_analyses(
+        db=db,
+        skip=skip,
+        limit=limit,
+    )
+
+    return {
+        "success": True,
+        "count": len(analyses),
+
+        "analyses": [
+            {
+                "id": analysis.id,
+                "batch_id": analysis.batch_id,
+                "job_id": analysis.job_id,
+
+                "transaction_count": (
+                    analysis.transaction_count
+                ),
+
+                "success": analysis.success,
+                "status": analysis.status,
+
+                "fraud_transactions": (
+                    analysis.fraud_transactions
+                ),
+
+                "legitimate_transactions": (
+                    analysis.legitimate_transactions
+                ),
+
+                "fraud_rate": (
+                    float(analysis.fraud_rate)
+                    if analysis.fraud_rate is not None
+                    else None
+                ),
+
+                "average_fraud_probability": (
+                    float(
+                        analysis.average_fraud_probability
+                    )
+                    if analysis.average_fraud_probability
+                    is not None
+                    else None
+                ),
+
+                "model_name": analysis.model_name,
+                "model_alias": analysis.model_alias,
+                "model_version": analysis.model_version,
+
+                "created_at": analysis.created_at,
+                "updated_at": analysis.updated_at,
+            }
+            for analysis in analyses
+        ],
+    }
+
+
+# ==========================================================
+# GET BATCH ANALYSIS
+# ==========================================================
+
+@router.get(
+    "/analysis/batches/{batch_id}",
+    tags=["Analysis"],
+)
+def get_batch_analysis(
+    batch_id: str,
+    db: Session = Depends(get_db),
+):
+
+    analysis = analysis_service.get_batch_analysis(
+        db=db,
+        batch_id=batch_id,
+    )
+
+    if analysis is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Batch analysis not found for "
+                f"'{batch_id}'."
+            ),
+        )
+
+    return {
+        "success": True,
+
+        "analysis": {
+            "id": analysis.id,
+
+            "batch_id": analysis.batch_id,
+
+            "job_id": analysis.job_id,
+
+            "transaction_count": (
+                analysis.transaction_count
+            ),
+
+            "success": analysis.success,
+
+            "status": analysis.status,
+
+            "summary": {
+                "total_transactions": (
+                    analysis.total_transactions
+                ),
+
+                "fraud_transactions": (
+                    analysis.fraud_transactions
+                ),
+
+                "legitimate_transactions": (
+                    analysis.legitimate_transactions
+                ),
+
+                "fraud_rate": (
+                    float(analysis.fraud_rate)
+                    if analysis.fraud_rate is not None
+                    else None
+                ),
+
+                "average_fraud_probability": (
+                    float(
+                        analysis.average_fraud_probability
+                    )
+                    if analysis.average_fraud_probability
+                    is not None
+                    else None
+                ),
+
+                "production_threshold": (
+                    float(
+                        analysis.production_threshold
+                    )
+                    if analysis.production_threshold
+                    is not None
+                    else None
+                ),
+            },
+
+            "model": {
+                "name": analysis.model_name,
+
+                "alias": analysis.model_alias,
+
+                "version": analysis.model_version,
+
+                "type": analysis.model_type,
+
+                "xgb_weight": (
+                    float(analysis.xgb_weight)
+                    if analysis.xgb_weight is not None
+                    else None
+                ),
+
+                "nn_weight": (
+                    float(analysis.nn_weight)
+                    if analysis.nn_weight is not None
+                    else None
+                ),
+            },
+
+            "input_s3_location": (
+                analysis.input_s3_location
+            ),
+
+            "artifacts": {
+                "result_download_url": (
+                    analysis.result_download_url
+                ),
+
+                "report_download_url": (
+                    analysis.report_download_url
+                ),
+            },
+
+            "metadata": analysis.analysis_metadata,
+
+            "created_at": analysis.created_at,
+
+            "updated_at": analysis.updated_at,
+        },
+    }
+
+
+# ==========================================================
+# GET SINGLE ANALYSIS
+# ==========================================================
+
+@router.get(
+    "/analysis/{transaction_id}",
+    tags=["Analysis"],
+)
+def get_single_analysis(
+    transaction_id: str,
+    db: Session = Depends(get_db),
+):
+
+    analysis = analysis_service.get_analysis(
+        db=db,
+        transaction_id=transaction_id,
+    )
+
+    if analysis is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Analysis not found for transaction "
+                f"'{transaction_id}'."
+            ),
+        )
+
+    return {
+        "success": True,
+
+        "analysis": {
+            "id": analysis.id,
+
+            "transaction_id": (
+                analysis.transaction_id
+            ),
+
+            "customer_id": (
+                analysis.customer_id
+            ),
+
+            "success": analysis.success,
+
+            "decision": {
+                "risk_level": (
+                    analysis.risk_level
+                ),
+
+                "action": (
+                    analysis.action
+                ),
+
+                "confidence": (
+                    float(analysis.confidence)
+                    if analysis.confidence is not None
+                    else None
+                ),
+            },
+
+            "evidence": {
+                "ml_risk_score": (
+                    float(
+                        analysis.ml_risk_score
+                    )
+                    if analysis.ml_risk_score
+                    is not None
+                    else None
+                ),
+
+                "anomaly_detected": (
+                    analysis.anomaly_detected
+                ),
+
+                "velocity_risk": (
+                    float(
+                        analysis.velocity_risk
+                    )
+                    if analysis.velocity_risk
+                    is not None
+                    else None
+                ),
+
+                "customer_risk": (
+                    float(
+                        analysis.customer_risk
+                    )
+                    if analysis.customer_risk
+                    is not None
+                    else None
+                ),
+
+                "transaction_risk": (
+                    float(
+                        analysis.transaction_risk
+                    )
+                    if analysis.transaction_risk
+                    is not None
+                    else None
+                ),
+
+                "triggered_rules": (
+                    analysis.triggered_rules
+                ),
+            },
+
+            "explanation": (
+                analysis.explanation
+            ),
+
+            "metadata": (
+                analysis.analysis_metadata
+            ),
+
+            "created_at": (
+                analysis.created_at
+            ),
+
+            "updated_at": (
+                analysis.updated_at
+            ),
+        },
+    }

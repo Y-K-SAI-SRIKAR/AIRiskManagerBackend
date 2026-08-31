@@ -292,6 +292,83 @@ class AnalysisService:
         db.refresh(analysis)
 
         return analysis
+        # ======================================================
+    # Get Single Analysis
+    # ======================================================
+
+    def get_analysis(
+        self,
+        db: Session,
+        transaction_id: str,
+    ) -> AnalysisResult | None:
+
+        return db.scalar(
+            select(AnalysisResult).where(
+                AnalysisResult.transaction_id
+                == transaction_id
+            )
+        )
+
+    # ======================================================
+    # Get Single Analyses
+    # ======================================================
+
+    def get_analyses(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[AnalysisResult]:
+
+        return list(
+            db.scalars(
+                select(AnalysisResult)
+                .order_by(
+                    AnalysisResult.created_at.desc()
+                )
+                .offset(skip)
+                .limit(limit)
+            )
+        )
+
+    # ======================================================
+    # Get Batch Analysis
+    # ======================================================
+
+    def get_batch_analysis(
+        self,
+        db: Session,
+        batch_id: str,
+    ) -> AnalysisBatch | None:
+
+        return db.scalar(
+            select(AnalysisBatch).where(
+                AnalysisBatch.batch_id
+                == batch_id
+            )
+        )
+
+    # ======================================================
+    # Get Batch Analyses
+    # ======================================================
+
+    def get_batch_analyses(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[AnalysisBatch]:
+
+        return list(
+            db.scalars(
+                select(AnalysisBatch)
+                .order_by(
+                    AnalysisBatch.created_at.desc()
+                )
+                .offset(skip)
+                .limit(limit)
+            )
+        )
 
 
 analysis_service = AnalysisService()
