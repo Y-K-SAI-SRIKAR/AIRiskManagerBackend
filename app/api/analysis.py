@@ -25,11 +25,11 @@ router = APIRouter(
 # Dataset-only Columns
 # ==========================================================
 #
-# These columns may exist in the uploaded dataset but are
-# NOT inference features.
+# These columns may exist in the uploaded CSV dataset,
+# but they are NOT required by the ML inference service.
 #
-# They are accepted by the Backend and ignored when building
-# the payload sent to the Agent.
+# They are accepted by the Backend and ignored when
+# constructing the Agent /analyze payload.
 #
 
 NON_INFERENCE_COLUMNS = {
@@ -42,10 +42,14 @@ NON_INFERENCE_COLUMNS = {
 # Expected ML Features
 # ==========================================================
 #
-# Exact 117 features expected by the deployed ML model.
+# The deployed ML model expects exactly these 117
+# inference features.
 #
-# The Backend uses these internally to construct the
-# Agent /analyze payload.
+# The Backend uses this list to construct the features
+# object sent to Agent /analyze.
+#
+# For /analyze/batch, the ORIGINAL CSV is forwarded
+# directly to the Agent.
 #
 
 EXPECTED_ML_FEATURES = {
@@ -63,14 +67,17 @@ EXPECTED_ML_FEATURES = {
     "dist1",
     "P_emaildomain",
     "R_emaildomain",
+
     "C2",
     "C3",
     "C9",
+
     "D1",
     "D3",
     "D5",
     "D11",
     "D15",
+
     "M1",
     "M2",
     "M3",
@@ -80,6 +87,7 @@ EXPECTED_ML_FEATURES = {
     "M7",
     "M8",
     "M9",
+
     "V1",
     "V3",
     "V5",
@@ -137,6 +145,7 @@ EXPECTED_ML_FEATURES = {
     "V305",
     "V312",
     "V315",
+
     "id_01",
     "id_02",
     "id_05",
@@ -156,6 +165,7 @@ EXPECTED_ML_FEATURES = {
     "id_36",
     "id_37",
     "id_38",
+
     "TransactionHour",
     "TransactionDay",
     "TransactionWeek",
@@ -170,8 +180,11 @@ EXPECTED_ML_FEATURES = {
 
 
 # ==========================================================
-# Generic User-Facing Errors
+# Generic User-Facing Error
 # ==========================================================
+#
+# Do not expose internal ML feature names to the frontend.
+#
 
 INVALID_CSV_FORMAT = (
     "CSV format is invalid. "
@@ -188,7 +201,8 @@ def _convert_value(
     value: Any,
 ) -> Any:
     """
-    Convert CSV string values into appropriate Python types.
+    Convert a CSV string value into an appropriate
+    Python value before sending it to the Agent.
     """
 
     if value is None:
@@ -199,14 +213,15 @@ def _convert_value(
     if value == "":
         return None
 
+    # Boolean values
     if value.lower() == "true":
         return True
 
     if value.lower() == "false":
         return False
 
+    # Integer values
     try:
-
         if (
             value.isdigit()
             or (
@@ -219,12 +234,11 @@ def _convert_value(
     except Exception:
         pass
 
+    # Float values
     try:
-
         return float(value)
 
     except ValueError:
-
         return value
 
 
@@ -236,21 +250,25 @@ def _build_ml_features(
     row: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Extract the 117 ML inference features from a CSV row.
+    Extract the 117 ML inference features from one CSV row.
 
-    Dataset-only columns such as:
+    Accepted dataset-only columns:
 
         isFraud
         TransactionAmt_Bin
 
     are ignored.
 
-    Internal schema errors are intentionally converted into
-    a generic error so that implementation details are not
-    exposed through the API.
+    Missing or unexpected columns are converted into a
+    generic CSV validation error so internal ML schema
+    details are not exposed to the client.
     """
 
     actual_columns = set(row.keys())
+
+    # ------------------------------------------------------
+    # Check required ML features
+    # ------------------------------------------------------
 
     missing = (
         EXPECTED_ML_FEATURES
@@ -258,10 +276,13 @@ def _build_ml_features(
     )
 
     if missing:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         )
+
+    # ------------------------------------------------------
+    # Check unexpected columns
+    # ------------------------------------------------------
 
     unexpected = (
         actual_columns
@@ -270,15 +291,17 @@ def _build_ml_features(
     )
 
     if unexpected:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         )
 
+    # ------------------------------------------------------
+    # Convert feature values
+    # ------------------------------------------------------
+
     features: dict[str, Any] = {}
 
     for feature in EXPECTED_ML_FEATURES:
-
         features[feature] = _convert_value(
             row[feature]
         )
@@ -298,27 +321,16 @@ def _build_agent_transaction(
     Convert one model CSV row into the JSON structure
     expected by Agent /analyze.
 
-    The frontend only needs to upload the model-format CSV.
+    The uploaded CSV contains the ML model features.
 
-    Backend-generated fields:
-
-        transaction_id
-        customer_id
-        currency
-        timestamp
-
-    Model-derived fields:
-
-        amount
-        features
+    The Backend creates the surrounding transaction
+    structure required by Agent /analyze.
     """
 
-    features = _build_ml_features(
-        row
-    )
+    features = _build_ml_features(row)
 
     # ------------------------------------------------------
-    # Amount
+    # Transaction Amount
     # ------------------------------------------------------
 
     amount = features.get(
@@ -326,23 +338,19 @@ def _build_agent_transaction(
     )
 
     if amount is None:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         )
 
     try:
-
         amount = float(amount)
 
     except (TypeError, ValueError) as exc:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         ) from exc
 
     if amount <= 0:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         )
@@ -350,6 +358,10 @@ def _build_agent_transaction(
     # ------------------------------------------------------
     # Transaction ID
     # ------------------------------------------------------
+    #
+    # The model CSV does not contain transaction_id.
+    # Generate one for the transaction being analyzed.
+    #
 
     transaction_id = (
         f"TXN-{uuid.uuid4().hex[:12].upper()}"
@@ -359,9 +371,8 @@ def _build_agent_transaction(
     # Customer ID
     # ------------------------------------------------------
     #
-    # The model CSV does not contain a customer identifier.
-    #
-    # Therefore the Backend generates one for this analysis.
+    # The model CSV does not contain customer_id.
+    # Generate one for this analysis.
     #
 
     customer_id = (
@@ -372,9 +383,11 @@ def _build_agent_transaction(
     # Timestamp
     # ------------------------------------------------------
     #
-    # TransactionDT is a relative dataset timestamp.
+    # TransactionDT is a relative timestamp from the
+    # model dataset.
     #
-    # Convert it to a valid ISO datetime required by Agent.
+    # Convert it into a valid datetime expected by
+    # TransactionRequest.
     #
 
     transaction_dt = features.get(
@@ -382,19 +395,16 @@ def _build_agent_transaction(
     )
 
     if transaction_dt is None:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         )
 
     try:
-
         transaction_dt = float(
             transaction_dt
         )
 
     except (TypeError, ValueError) as exc:
-
         raise ValueError(
             INVALID_CSV_FORMAT
         ) from exc
@@ -416,7 +426,7 @@ def _build_agent_transaction(
     )
 
     # ------------------------------------------------------
-    # Agent Payload
+    # Agent Transaction Payload
     # ------------------------------------------------------
 
     return {
@@ -467,46 +477,43 @@ async def analyze_single(
     file: UploadFile = File(...),
 ):
     """
-    Analyze one transaction.
+    Analyze exactly one transaction from a CSV file.
 
-    Expected input:
+    Expected CSV:
 
-        CSV
-        exactly one row
-        117 ML inference features
+        117 ML inference columns
 
-    Optional dataset-only columns:
+    Optional:
 
         isFraud
         TransactionAmt_Bin
 
-    are accepted and ignored.
+    The two optional dataset columns are ignored.
     """
 
     # ------------------------------------------------------
-    # File validation
+    # Validate filename
     # ------------------------------------------------------
 
     if not file.filename:
-
         raise HTTPException(
             status_code=400,
             detail="File name is required.",
         )
 
-    if not file.filename.lower().endswith(
-        ".csv"
-    ):
-
+    if not file.filename.lower().endswith(".csv"):
         raise HTTPException(
             status_code=400,
             detail="Only CSV files are supported.",
         )
 
+    # ------------------------------------------------------
+    # Read uploaded file
+    # ------------------------------------------------------
+
     file_content = await file.read()
 
     if not file_content:
-
         raise HTTPException(
             status_code=400,
             detail="Uploaded CSV file is empty.",
@@ -515,17 +522,15 @@ async def analyze_single(
     try:
 
         # --------------------------------------------------
-        # Read exactly one transaction
+        # Validate that exactly one row exists
         # --------------------------------------------------
 
-        row = (
-            csv_service.validate_single(
-                file_content
-            )
+        row = csv_service.validate_single(
+            file_content
         )
 
         # --------------------------------------------------
-        # Build Agent request
+        # Build Agent payload
         # --------------------------------------------------
 
         agent_transaction = (
@@ -542,7 +547,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Upload original CSV to input S3
+        # Save ORIGINAL uploaded CSV to S3
         # --------------------------------------------------
 
         (
@@ -556,7 +561,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Call Agent
+        # Call Agent /analyze
         # --------------------------------------------------
 
         result = await agent_service.analyze(
@@ -564,7 +569,7 @@ async def analyze_single(
         )
 
         # --------------------------------------------------
-        # Response
+        # Return response
         # --------------------------------------------------
 
         return {
@@ -581,10 +586,6 @@ async def analyze_single(
 
     except ValueError as exc:
 
-        # --------------------------------------------------
-        # Never expose internal column names/schema details
-        # --------------------------------------------------
-
         raise HTTPException(
             status_code=400,
             detail=str(exc),
@@ -594,9 +595,7 @@ async def analyze_single(
 
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"Analysis failed: {exc}"
-            ),
+            detail=f"Analysis failed: {exc}",
         ) from exc
 
 
@@ -612,54 +611,47 @@ async def analyze_batch(
     file: UploadFile = File(...),
 ):
     """
-    Analyze multiple transactions.
+    Analyze multiple transactions from a CSV file.
 
-    Expected input:
+    Expected CSV:
 
-        CSV
-        one or more rows
-        117 ML inference features
+        117 ML inference columns
 
-    Optional dataset-only columns:
+    Optional:
 
         isFraud
         TransactionAmt_Bin
 
-    are accepted and ignored.
-
-    The original CSV is sent directly to:
+    The original CSV is forwarded directly to:
 
         Agent /analyze/batch
 
-    The Backend NEVER calls:
-
-        ML /predict/batch
+    The Backend does NOT call the ML service directly.
     """
 
     # ------------------------------------------------------
-    # File validation
+    # Validate filename
     # ------------------------------------------------------
 
     if not file.filename:
-
         raise HTTPException(
             status_code=400,
             detail="File name is required.",
         )
 
-    if not file.filename.lower().endswith(
-        ".csv"
-    ):
-
+    if not file.filename.lower().endswith(".csv"):
         raise HTTPException(
             status_code=400,
             detail="Only CSV files are supported.",
         )
 
+    # ------------------------------------------------------
+    # Read uploaded file
+    # ------------------------------------------------------
+
     file_content = await file.read()
 
     if not file_content:
-
         raise HTTPException(
             status_code=400,
             detail="Uploaded CSV file is empty.",
@@ -678,19 +670,20 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Validate every row internally
+        # Validate ML schema for every row
         #
-        # No column names are exposed to the frontend.
+        # This happens BEFORE sending the file to Agent.
+        #
+        # Internal feature names are never returned to
+        # the frontend.
         # --------------------------------------------------
 
         for row in transactions:
 
-            _build_ml_features(
-                row
-            )
+            _build_ml_features(row)
 
         # --------------------------------------------------
-        # Generate Backend batch ID
+        # Generate batch ID
         # --------------------------------------------------
 
         batch_id = (
@@ -698,7 +691,7 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # Store uploaded CSV in S3
+        # Store ORIGINAL CSV in S3
         # --------------------------------------------------
 
         (
@@ -712,20 +705,19 @@ async def analyze_batch(
         )
 
         # --------------------------------------------------
-        # IMPORTANT
+        # Send ORIGINAL CSV to Agent
+        # --------------------------------------------------
         #
-        # Send the ORIGINAL CSV to Agent.
+        # Important:
         #
-        # Do NOT call ML directly.
-        # Do NOT convert the CSV to /predict/batch.
+        # Backend does NOT:
         #
-        # Agent owns:
+        #   - rebuild the CSV
+        #   - convert it to JSON
+        #   - call ML /predict
+        #   - call ML /predict/batch
         #
-        #     /analyze/batch
-        #          ↓
-        #     /predict/batch
-        #          ↓
-        #     reports
+        # Agent owns the complete batch workflow.
         # --------------------------------------------------
 
         result = (
@@ -740,10 +732,10 @@ async def analyze_batch(
         #
         # This preserves:
         #
-        # result_download_url
-        # report_download_url
+        #   result_download_url
+        #   report_download_url
         #
-        # for the frontend download buttons.
+        # for the frontend.
         # --------------------------------------------------
 
         return {
@@ -773,8 +765,5 @@ async def analyze_batch(
 
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"Batch analysis failed: "
-                f"{exc}"
-            ),
+            detail=f"Batch analysis failed: {exc}",
         ) from exc
