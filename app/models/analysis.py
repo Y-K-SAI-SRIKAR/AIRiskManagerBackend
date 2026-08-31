@@ -46,12 +46,12 @@ class AnalysisResult(Base):
     )
 
     confidence: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
     ml_risk_score: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
@@ -60,17 +60,17 @@ class AnalysisResult(Base):
     )
 
     velocity_risk: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
     customer_risk: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
     transaction_risk: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 

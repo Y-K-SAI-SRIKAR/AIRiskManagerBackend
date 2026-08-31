@@ -1,4 +1,5 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.transaction import Transaction
@@ -6,18 +7,17 @@ from app.schemas.transaction import TransactionCreate
 
 
 # ==========================================================
-# CREATE TRANSACTION
+# Create Transaction
 # ==========================================================
 
 def create_transaction(
     db: Session,
     transaction_data: TransactionCreate,
 ) -> Transaction:
-    """
-    Create and persist a transaction in RDS.
 
-    A transaction_id must be unique.
-    """
+    # ------------------------------------------------------
+    # Check for existing transaction
+    # ------------------------------------------------------
 
     existing_transaction = db.scalar(
         select(Transaction).where(
@@ -30,6 +30,10 @@ def create_transaction(
         raise ValueError(
             "Transaction already exists."
         )
+
+    # ------------------------------------------------------
+    # Build transaction
+    # ------------------------------------------------------
 
     transaction = Transaction(
         transaction_id=transaction_data.transaction_id,
@@ -49,29 +53,41 @@ def create_transaction(
         transaction_metadata=transaction_data.metadata,
     )
 
+    # ------------------------------------------------------
+    # Persist safely
+    # ------------------------------------------------------
+
     try:
         db.add(transaction)
+
         db.commit()
+
         db.refresh(transaction)
+
+        return transaction
+
+    except IntegrityError as exc:
+        db.rollback()
+
+        raise ValueError(
+            "Transaction could not be created because "
+            "the transaction_id already exists or a "
+            "database constraint was violated."
+        ) from exc
 
     except Exception:
         db.rollback()
         raise
 
-    return transaction
-
 
 # ==========================================================
-# GET SINGLE TRANSACTION
+# Get Single Transaction
 # ==========================================================
 
 def get_transaction(
     db: Session,
     transaction_id: str,
 ) -> Transaction | None:
-    """
-    Retrieve a transaction using its transaction_id.
-    """
 
     return db.scalar(
         select(Transaction).where(
@@ -82,7 +98,7 @@ def get_transaction(
 
 
 # ==========================================================
-# GET TRANSACTIONS
+# Get Transactions
 # ==========================================================
 
 def get_transactions(
@@ -90,9 +106,6 @@ def get_transactions(
     skip: int = 0,
     limit: int = 100,
 ) -> list[Transaction]:
-    """
-    Retrieve transactions with pagination.
-    """
 
     return list(
         db.scalars(
@@ -104,53 +117,3 @@ def get_transactions(
             .limit(limit)
         )
     )
-
-
-# ==========================================================
-# GET CUSTOMER TRANSACTIONS
-# ==========================================================
-
-def get_customer_transactions(
-    db: Session,
-    customer_id: str,
-    skip: int = 0,
-    limit: int = 100,
-) -> list[Transaction]:
-    """
-    Retrieve transactions belonging to a customer.
-    """
-
-    return list(
-        db.scalars(
-            select(Transaction)
-            .where(
-                Transaction.customer_id
-                == customer_id
-            )
-            .order_by(
-                Transaction.timestamp.desc()
-            )
-            .offset(skip)
-            .limit(limit)
-        )
-    )
-
-
-# ==========================================================
-# TRANSACTION EXISTS
-# ==========================================================
-
-def transaction_exists(
-    db: Session,
-    transaction_id: str,
-) -> bool:
-    """
-    Check whether a transaction already exists.
-    """
-
-    statement = select(Transaction.id).where(
-        Transaction.transaction_id
-        == transaction_id
-    )
-
-    return db.scalar(statement) is not None

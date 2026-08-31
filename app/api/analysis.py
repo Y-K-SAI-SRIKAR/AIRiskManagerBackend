@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+import httpx
 from fastapi import (
     APIRouter,
     Depends,
@@ -11,6 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
@@ -22,6 +24,13 @@ from app.services.s3_service import s3_service
 from app.services.transaction_service import create_transaction
 
 from app.schemas.transaction import TransactionCreate
+
+from app.schemas.analysis import (
+    AnalysisDetailResponse,
+    AnalysisListResponse,
+    BatchAnalysisDetailResponse,
+    BatchAnalysisListResponse,
+)
 
 
 router = APIRouter(
@@ -172,13 +181,28 @@ EXPECTED_ML_FEATURES = {
 
 
 # ==========================================================
-# Generic User-Facing Error
+# Generic User-Facing Errors
 # ==========================================================
 
 INVALID_CSV_FORMAT = (
     "CSV format is invalid. "
     "Please upload a CSV matching the supported "
     "transaction format."
+)
+
+AGENT_UNAVAILABLE = (
+    "The risk analysis service is currently unavailable. "
+    "Please try again later."
+)
+
+S3_UNAVAILABLE = (
+    "The file storage service is currently unavailable. "
+    "Please try again later."
+)
+
+DATABASE_ERROR = (
+    "The analysis could not be saved because of a "
+    "database error. Please try again later."
 )
 
 
@@ -418,13 +442,13 @@ async def analyze_single(
 
     if not file.filename:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="File name is required.",
         )
 
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only CSV files are supported.",
         )
 
@@ -432,7 +456,7 @@ async def analyze_single(
 
     if not file_content:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Uploaded CSV file is empty.",
         )
 
@@ -467,45 +491,114 @@ async def analyze_single(
         # Save original CSV to S3
         # --------------------------------------------------
 
-        (
-            s3_location,
-            _download_url,
-        ) = s3_service.upload_transaction_file(
-            transaction_id=transaction_id,
-            file_content=file_content,
-            filename=file.filename,
-            content_type="text/csv",
-        )
+        try:
+
+            (
+                s3_location,
+                _download_url,
+            ) = s3_service.upload_transaction_file(
+                transaction_id=transaction_id,
+                file_content=file_content,
+                filename=file.filename,
+                content_type="text/csv",
+            )
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=S3_UNAVAILABLE,
+            ) from exc
 
         # --------------------------------------------------
         # Call Agent
         # --------------------------------------------------
 
-        result = await agent_service.analyze(
-            transaction=agent_transaction
-        )
+        try:
+
+            result = await agent_service.analyze(
+                transaction=agent_transaction
+            )
+
+        except (
+            httpx.TimeoutException,
+            httpx.RequestError,
+            httpx.HTTPStatusError,
+        ) as exc:
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=AGENT_UNAVAILABLE,
+            ) from exc
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=AGENT_UNAVAILABLE,
+            ) from exc
 
         # --------------------------------------------------
         # Persist transaction
         # --------------------------------------------------
 
-        transaction_data = TransactionCreate(
-            **agent_transaction
-        )
+        try:
 
-        create_transaction(
-            db=db,
-            transaction_data=transaction_data,
-        )
+            transaction_data = TransactionCreate(
+                **agent_transaction
+            )
+
+            create_transaction(
+                db=db,
+                transaction_data=transaction_data,
+            )
+
+        except ValueError as exc:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+
+        except SQLAlchemyError as exc:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=DATABASE_ERROR,
+            ) from exc
 
         # --------------------------------------------------
         # Persist analysis
         # --------------------------------------------------
 
-        analysis_service.save_analysis(
-            db=db,
-            result=result,
-        )
+        try:
+
+            analysis_service.save_analysis(
+                db=db,
+                result=result,
+            )
+
+        except ValueError as exc:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+
+        except SQLAlchemyError as exc:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=DATABASE_ERROR,
+            ) from exc
 
         # --------------------------------------------------
         # Return response
@@ -523,11 +616,25 @@ async def analyze_single(
             "analysis": result,
         }
 
+    except HTTPException:
+        raise
+
     except ValueError as exc:
 
+        db.rollback()
+
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
+        ) from exc
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=DATABASE_ERROR,
         ) from exc
 
     except Exception as exc:
@@ -535,8 +642,8 @@ async def analyze_single(
         db.rollback()
 
         raise HTTPException(
-            status_code=502,
-            detail=f"Analysis failed: {exc}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Analysis failed due to an internal server error.",
         ) from exc
 
 
@@ -559,13 +666,13 @@ async def analyze_batch(
 
     if not file.filename:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="File name is required.",
         )
 
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only CSV files are supported.",
         )
 
@@ -573,7 +680,7 @@ async def analyze_batch(
 
     if not file_content:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Uploaded CSV file is empty.",
         )
 
@@ -609,40 +716,89 @@ async def analyze_batch(
         # Upload original CSV
         # --------------------------------------------------
 
-        (
-            s3_location,
-            _download_url,
-        ) = s3_service.upload_batch_file(
-            batch_id=batch_id,
-            file_content=file_content,
-            filename=file.filename,
-            content_type="text/csv",
-        )
+        try:
+
+            (
+                s3_location,
+                _download_url,
+            ) = s3_service.upload_batch_file(
+                batch_id=batch_id,
+                file_content=file_content,
+                filename=file.filename,
+                content_type="text/csv",
+            )
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=S3_UNAVAILABLE,
+            ) from exc
 
         # --------------------------------------------------
         # Call Agent batch endpoint
         # --------------------------------------------------
 
-        result = (
-            await agent_service.analyze_batch(
-                file_content=file_content,
-                filename=file.filename,
+        try:
+
+            result = (
+                await agent_service.analyze_batch(
+                    file_content=file_content,
+                    filename=file.filename,
+                )
             )
-        )
+
+        except (
+            httpx.TimeoutException,
+            httpx.RequestError,
+            httpx.HTTPStatusError,
+        ) as exc:
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=AGENT_UNAVAILABLE,
+            ) from exc
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=AGENT_UNAVAILABLE,
+            ) from exc
 
         # --------------------------------------------------
         # Persist batch analysis
         # --------------------------------------------------
 
-        analysis_service.save_batch_analysis(
-            db=db,
-            batch_id=batch_id,
-            transaction_count=len(
-                transactions
-            ),
-            input_s3_location=s3_location,
-            result=result,
-        )
+        try:
+
+            analysis_service.save_batch_analysis(
+                db=db,
+                batch_id=batch_id,
+                transaction_count=len(
+                    transactions
+                ),
+                input_s3_location=s3_location,
+                result=result,
+            )
+
+        except ValueError as exc:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+
+        except SQLAlchemyError as exc:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=DATABASE_ERROR,
+            ) from exc
 
         # --------------------------------------------------
         # Return response
@@ -664,11 +820,25 @@ async def analyze_batch(
             "analysis": result,
         }
 
+    except HTTPException:
+        raise
+
     except ValueError as exc:
 
+        db.rollback()
+
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
+        ) from exc
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=DATABASE_ERROR,
         ) from exc
 
     except Exception as exc:
@@ -676,8 +846,8 @@ async def analyze_batch(
         db.rollback()
 
         raise HTTPException(
-            status_code=502,
-            detail=f"Batch analysis failed: {exc}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Batch analysis failed due to an internal server error.",
         ) from exc
 
 
@@ -687,6 +857,7 @@ async def analyze_batch(
 
 @router.get(
     "/analysis",
+    response_model=AnalysisListResponse,
     tags=["Analysis"],
 )
 def list_analyses(
@@ -702,11 +873,22 @@ def list_analyses(
     db: Session = Depends(get_db),
 ):
 
-    analyses = analysis_service.get_analyses(
-        db=db,
-        skip=skip,
-        limit=limit,
-    )
+    try:
+
+        analyses = analysis_service.get_analyses(
+            db=db,
+            skip=skip,
+            limit=limit,
+        )
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=DATABASE_ERROR,
+        ) from exc
 
     return {
         "success": True,
@@ -715,11 +897,24 @@ def list_analyses(
         "analyses": [
             {
                 "id": analysis.id,
-                "transaction_id": analysis.transaction_id,
-                "customer_id": analysis.customer_id,
+
+                "transaction_id": (
+                    analysis.transaction_id
+                ),
+
+                "customer_id": (
+                    analysis.customer_id
+                ),
+
                 "success": analysis.success,
-                "risk_level": analysis.risk_level,
-                "action": analysis.action,
+
+                "risk_level": (
+                    analysis.risk_level
+                ),
+
+                "action": (
+                    analysis.action
+                ),
 
                 "confidence": (
                     float(analysis.confidence)
@@ -728,14 +923,22 @@ def list_analyses(
                 ),
 
                 "ml_risk_score": (
-                    float(analysis.ml_risk_score)
+                    float(
+                        analysis.ml_risk_score
+                    )
                     if analysis.ml_risk_score is not None
                     else None
                 ),
 
-                "created_at": analysis.created_at,
-                "updated_at": analysis.updated_at,
+                "created_at": (
+                    analysis.created_at
+                ),
+
+                "updated_at": (
+                    analysis.updated_at
+                ),
             }
+
             for analysis in analyses
         ],
     }
@@ -747,6 +950,7 @@ def list_analyses(
 
 @router.get(
     "/analysis/batches",
+    response_model=BatchAnalysisListResponse,
     tags=["Analysis"],
 )
 def list_batch_analyses(
@@ -762,11 +966,24 @@ def list_batch_analyses(
     db: Session = Depends(get_db),
 ):
 
-    analyses = analysis_service.get_batch_analyses(
-        db=db,
-        skip=skip,
-        limit=limit,
-    )
+    try:
+
+        analyses = (
+            analysis_service.get_batch_analyses(
+                db=db,
+                skip=skip,
+                limit=limit,
+            )
+        )
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=DATABASE_ERROR,
+        ) from exc
 
     return {
         "success": True,
@@ -775,7 +992,9 @@ def list_batch_analyses(
         "analyses": [
             {
                 "id": analysis.id,
+
                 "batch_id": analysis.batch_id,
+
                 "job_id": analysis.job_id,
 
                 "transaction_count": (
@@ -783,6 +1002,7 @@ def list_batch_analyses(
                 ),
 
                 "success": analysis.success,
+
                 "status": analysis.status,
 
                 "fraud_transactions": (
@@ -803,18 +1023,30 @@ def list_batch_analyses(
                     float(
                         analysis.average_fraud_probability
                     )
-                    if analysis.average_fraud_probability
-                    is not None
+                    if (
+                        analysis.average_fraud_probability
+                        is not None
+                    )
                     else None
                 ),
 
                 "model_name": analysis.model_name,
-                "model_alias": analysis.model_alias,
-                "model_version": analysis.model_version,
 
-                "created_at": analysis.created_at,
-                "updated_at": analysis.updated_at,
+                "model_alias": analysis.model_alias,
+
+                "model_version": (
+                    analysis.model_version
+                ),
+
+                "created_at": (
+                    analysis.created_at
+                ),
+
+                "updated_at": (
+                    analysis.updated_at
+                ),
             }
+
             for analysis in analyses
         ],
     }
@@ -826,6 +1058,7 @@ def list_batch_analyses(
 
 @router.get(
     "/analysis/batches/{batch_id}",
+    response_model=BatchAnalysisDetailResponse,
     tags=["Analysis"],
 )
 def get_batch_analysis(
@@ -833,15 +1066,28 @@ def get_batch_analysis(
     db: Session = Depends(get_db),
 ):
 
-    analysis = analysis_service.get_batch_analysis(
-        db=db,
-        batch_id=batch_id,
-    )
+    try:
+
+        analysis = (
+            analysis_service.get_batch_analysis(
+                db=db,
+                batch_id=batch_id,
+            )
+        )
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=DATABASE_ERROR,
+        ) from exc
 
     if analysis is None:
 
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=(
                 f"Batch analysis not found for "
                 f"'{batch_id}'."
@@ -889,8 +1135,10 @@ def get_batch_analysis(
                     float(
                         analysis.average_fraud_probability
                     )
-                    if analysis.average_fraud_probability
-                    is not None
+                    if (
+                        analysis.average_fraud_probability
+                        is not None
+                    )
                     else None
                 ),
 
@@ -898,8 +1146,10 @@ def get_batch_analysis(
                     float(
                         analysis.production_threshold
                     )
-                    if analysis.production_threshold
-                    is not None
+                    if (
+                        analysis.production_threshold
+                        is not None
+                    )
                     else None
                 ),
             },
@@ -940,11 +1190,17 @@ def get_batch_analysis(
                 ),
             },
 
-            "metadata": analysis.analysis_metadata,
+            "metadata": (
+                analysis.analysis_metadata
+            ),
 
-            "created_at": analysis.created_at,
+            "created_at": (
+                analysis.created_at
+            ),
 
-            "updated_at": analysis.updated_at,
+            "updated_at": (
+                analysis.updated_at
+            ),
         },
     }
 
@@ -955,6 +1211,7 @@ def get_batch_analysis(
 
 @router.get(
     "/analysis/{transaction_id}",
+    response_model=AnalysisDetailResponse,
     tags=["Analysis"],
 )
 def get_single_analysis(
@@ -962,15 +1219,26 @@ def get_single_analysis(
     db: Session = Depends(get_db),
 ):
 
-    analysis = analysis_service.get_analysis(
-        db=db,
-        transaction_id=transaction_id,
-    )
+    try:
+
+        analysis = analysis_service.get_analysis(
+            db=db,
+            transaction_id=transaction_id,
+        )
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=DATABASE_ERROR,
+        ) from exc
 
     if analysis is None:
 
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=(
                 f"Analysis not found for transaction "
                 f"'{transaction_id}'."
@@ -1014,8 +1282,10 @@ def get_single_analysis(
                     float(
                         analysis.ml_risk_score
                     )
-                    if analysis.ml_risk_score
-                    is not None
+                    if (
+                        analysis.ml_risk_score
+                        is not None
+                    )
                     else None
                 ),
 
@@ -1027,8 +1297,10 @@ def get_single_analysis(
                     float(
                         analysis.velocity_risk
                     )
-                    if analysis.velocity_risk
-                    is not None
+                    if (
+                        analysis.velocity_risk
+                        is not None
+                    )
                     else None
                 ),
 
@@ -1036,8 +1308,10 @@ def get_single_analysis(
                     float(
                         analysis.customer_risk
                     )
-                    if analysis.customer_risk
-                    is not None
+                    if (
+                        analysis.customer_risk
+                        is not None
+                    )
                     else None
                 ),
 
@@ -1045,8 +1319,10 @@ def get_single_analysis(
                     float(
                         analysis.transaction_risk
                     )
-                    if analysis.transaction_risk
-                    is not None
+                    if (
+                        analysis.transaction_risk
+                        is not None
+                    )
                     else None
                 ),
 

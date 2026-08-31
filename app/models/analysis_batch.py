@@ -59,17 +59,17 @@ class AnalysisBatch(Base):
     )
 
     fraud_rate: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
     average_fraud_probability: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
     production_threshold: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
@@ -94,12 +94,12 @@ class AnalysisBatch(Base):
     )
 
     xgb_weight: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 
     nn_weight: Mapped[float | None] = mapped_column(
-        Numeric,
+        Numeric(12, 8),
         nullable=True,
     )
 

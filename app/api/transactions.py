@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
+
 from app.schemas.transaction import (
     TransactionCreate,
     TransactionResponse,
 )
+
 from app.services.transaction_service import (
     create_transaction,
     get_transaction,
@@ -19,6 +22,10 @@ router = APIRouter(
 )
 
 
+# ==========================================================
+# Create Transaction
+# ==========================================================
+
 @router.post(
     "",
     response_model=TransactionResponse,
@@ -30,17 +37,37 @@ def create_transaction_endpoint(
 ):
 
     try:
+
         return create_transaction(
             db=db,
             transaction_data=transaction,
         )
 
     except ValueError as exc:
+
+        db.rollback()
+
         raise HTTPException(
             status_code=409,
             detail=str(exc),
-        )
+        ) from exc
 
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The transaction could not be saved "
+                "because of a database error."
+            ),
+        ) from exc
+
+
+# ==========================================================
+# Get Transaction
+# ==========================================================
 
 @router.get(
     "/{transaction_id}",
@@ -51,12 +78,27 @@ def get_transaction_endpoint(
     db: Session = Depends(get_db),
 ):
 
-    transaction = get_transaction(
-        db=db,
-        transaction_id=transaction_id,
-    )
+    try:
 
-    if not transaction:
+        transaction = get_transaction(
+            db=db,
+            transaction_id=transaction_id,
+        )
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "The transaction could not be retrieved "
+                "because of a database error."
+            ),
+        ) from exc
+
+    if transaction is None:
+
         raise HTTPException(
             status_code=404,
             detail="Transaction not found.",
@@ -64,6 +106,10 @@ def get_transaction_endpoint(
 
     return transaction
 
+
+# ==========================================================
+# List Transactions
+# ==========================================================
 
 @router.get(
     "",
@@ -82,8 +128,22 @@ def get_transactions_endpoint(
     db: Session = Depends(get_db),
 ):
 
-    return get_transactions(
-        db=db,
-        skip=skip,
-        limit=limit,
-    )
+    try:
+
+        return get_transactions(
+            db=db,
+            skip=skip,
+            limit=limit,
+        )
+
+    except SQLAlchemyError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Transactions could not be retrieved "
+                "because of a database error."
+            ),
+        ) from exc

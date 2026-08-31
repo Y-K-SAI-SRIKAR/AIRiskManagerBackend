@@ -1,6 +1,7 @@
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.analysis import AnalysisResult
@@ -9,9 +10,9 @@ from app.models.analysis_batch import AnalysisBatch
 
 class AnalysisService:
 
-    # ======================================================
+    # ==========================================================
     # Single Analysis
-    # ======================================================
+    # ==========================================================
 
     def save_analysis(
         self,
@@ -37,6 +38,10 @@ class AnalysisService:
             "customer_id"
         )
 
+        # ------------------------------------------------------
+        # Validate required analysis identifiers
+        # ------------------------------------------------------
+
         if not transaction_id:
             raise ValueError(
                 "Analysis result is missing transaction_id."
@@ -47,12 +52,20 @@ class AnalysisService:
                 "Analysis result is missing customer_id."
             )
 
+        # ------------------------------------------------------
+        # Look for existing analysis
+        # ------------------------------------------------------
+
         existing = db.scalar(
             select(AnalysisResult).where(
                 AnalysisResult.transaction_id
                 == transaction_id
             )
         )
+
+        # ------------------------------------------------------
+        # Update existing analysis
+        # ------------------------------------------------------
 
         if existing:
 
@@ -109,10 +122,23 @@ class AnalysisService:
                 {},
             )
 
-            db.commit()
-            db.refresh(existing)
+            try:
 
-            return existing
+                db.commit()
+
+                db.refresh(existing)
+
+                return existing
+
+            except Exception:
+
+                db.rollback()
+
+                raise
+
+        # ------------------------------------------------------
+        # Create new analysis
+        # ------------------------------------------------------
 
         analysis = AnalysisResult(
             transaction_id=transaction_id,
@@ -172,15 +198,35 @@ class AnalysisService:
             ),
         )
 
-        db.add(analysis)
-        db.commit()
-        db.refresh(analysis)
+        try:
 
-        return analysis
+            db.add(analysis)
 
-    # ======================================================
+            db.commit()
+
+            db.refresh(analysis)
+
+            return analysis
+
+        except IntegrityError as exc:
+
+            db.rollback()
+
+            raise ValueError(
+                "Analysis could not be saved because "
+                "the transaction already has an analysis "
+                "or violates a database constraint."
+            ) from exc
+
+        except Exception:
+
+            db.rollback()
+
+            raise
+
+    # ==========================================================
     # Batch Analysis
-    # ======================================================
+    # ==========================================================
 
     def save_batch_analysis(
         self,
@@ -205,6 +251,36 @@ class AnalysisService:
             "artifacts",
             {},
         )
+
+        # ------------------------------------------------------
+        # Validate batch ID
+        # ------------------------------------------------------
+
+        if not batch_id:
+            raise ValueError(
+                "batch_id is required."
+            )
+
+        # ------------------------------------------------------
+        # Prevent duplicate batch records
+        # ------------------------------------------------------
+
+        existing = db.scalar(
+            select(AnalysisBatch).where(
+                AnalysisBatch.batch_id
+                == batch_id
+            )
+        )
+
+        if existing:
+            raise ValueError(
+                f"Batch analysis already exists for batch_id "
+                f"'{batch_id}'."
+            )
+
+        # ------------------------------------------------------
+        # Create batch analysis
+        # ------------------------------------------------------
 
         analysis = AnalysisBatch(
             batch_id=batch_id,
@@ -284,15 +360,65 @@ class AnalysisService:
                 "report_download_url"
             ),
 
-            metadata={},
+            analysis_metadata=result.get(
+                "metadata",
+                {},
+            ),
         )
 
-        db.add(analysis)
-        db.commit()
-        db.refresh(analysis)
+        # ------------------------------------------------------
+        # Persist batch safely
+        # ------------------------------------------------------
 
-        return analysis
-        # ======================================================
+        try:
+
+            db.add(analysis)
+
+            db.commit()
+
+            db.refresh(analysis)
+
+            return analysis
+
+        except IntegrityError as exc:
+
+            db.rollback()
+
+            raise ValueError(
+                "Batch analysis could not be saved because "
+                "the batch_id already exists or violates "
+                "a database constraint."
+            ) from exc
+
+        except Exception:
+
+            db.rollback()
+
+            raise
+    
+    # ======================================================
+    # List Single Analyses
+    # ======================================================
+
+    def get_analyses(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[AnalysisResult]:
+
+        return list(
+            db.scalars(
+                select(AnalysisResult)
+                .order_by(
+                    AnalysisResult.created_at.desc()
+                )
+                .offset(skip)
+                .limit(limit)
+            )
+        )
+
+    # ======================================================
     # Get Single Analysis
     # ======================================================
 
@@ -310,21 +436,21 @@ class AnalysisService:
         )
 
     # ======================================================
-    # Get Single Analyses
+    # List Batch Analyses
     # ======================================================
 
-    def get_analyses(
+    def get_batch_analyses(
         self,
         db: Session,
         skip: int = 0,
         limit: int = 100,
-    ) -> list[AnalysisResult]:
+    ) -> list[AnalysisBatch]:
 
         return list(
             db.scalars(
-                select(AnalysisResult)
+                select(AnalysisBatch)
                 .order_by(
-                    AnalysisResult.created_at.desc()
+                    AnalysisBatch.created_at.desc()
                 )
                 .offset(skip)
                 .limit(limit)
@@ -347,28 +473,5 @@ class AnalysisService:
                 == batch_id
             )
         )
-
-    # ======================================================
-    # Get Batch Analyses
-    # ======================================================
-
-    def get_batch_analyses(
-        self,
-        db: Session,
-        skip: int = 0,
-        limit: int = 100,
-    ) -> list[AnalysisBatch]:
-
-        return list(
-            db.scalars(
-                select(AnalysisBatch)
-                .order_by(
-                    AnalysisBatch.created_at.desc()
-                )
-                .offset(skip)
-                .limit(limit)
-            )
-        )
-
 
 analysis_service = AnalysisService()
