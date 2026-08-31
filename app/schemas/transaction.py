@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class TransactionCreate(BaseModel):
@@ -106,3 +107,4 @@ class TransactionResponse(BaseModel):
     created_at: datetime
 
     updated_at: datetime
+

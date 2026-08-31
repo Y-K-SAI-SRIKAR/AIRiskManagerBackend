@@ -5,9 +5,25 @@ from app.config import (
     APP_NAME,
     APP_VERSION,
 )
-from app.database.connection import engine
-from app.api.transactions import router as transactions_router
 
+from app.database.connection import engine
+
+from app.api.transactions import (
+    router as transactions_router,
+)
+
+from app.api.agent import (
+    router as agent_router,
+)
+
+from app.api.analysis import (
+    router as analysis_router,
+)
+
+
+# ==========================================================
+# FastAPI Application
+# ==========================================================
 
 app = FastAPI(
     title=APP_NAME,
@@ -15,11 +31,34 @@ app = FastAPI(
 )
 
 
+# ==========================================================
+# API Routers
+# ==========================================================
+
+# Transaction CRUD
 app.include_router(
     transactions_router,
     prefix="/api/v1",
 )
 
+
+# Agent health / integration
+app.include_router(
+    agent_router,
+    prefix="/api/v1",
+)
+
+
+# Single + Batch analysis
+app.include_router(
+    analysis_router,
+    prefix="/api/v1",
+)
+
+
+# ==========================================================
+# Application Health
+# ==========================================================
 
 @app.get(
     "/health",
@@ -32,6 +71,10 @@ def health():
         "service": "AI Risk Manager Backend",
     }
 
+
+# ==========================================================
+# Database Health
+# ==========================================================
 
 @app.get(
     "/health/db",
