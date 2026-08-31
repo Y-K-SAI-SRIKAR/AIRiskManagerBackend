@@ -20,6 +20,9 @@ from app.api.analysis import (
     router as analysis_router,
 )
 
+from app.api.feedback import (
+    router as feedback_router,
+)
 
 # ==========================================================
 # FastAPI Application
@@ -55,6 +58,11 @@ app.include_router(
     prefix="/api/v1",
 )
 
+# Feedback persistence
+app.include_router(
+    feedback_router,
+    prefix="/api/v1",
+)
 
 # ==========================================================
 # Application Health
