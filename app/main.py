@@ -23,6 +23,7 @@ from app.api.analysis import (
 from app.api.feedback import (
     router as feedback_router,
 )
+from fastapi.middleware.cors import CORSMiddleware
 
 # ==========================================================
 # FastAPI Application
@@ -33,6 +34,19 @@ app = FastAPI(
     version=APP_VERSION,
 )
 
+# ==========================================================
+# CORS
+# ==========================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:6979",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================================================
 # API Routers

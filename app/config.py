@@ -29,7 +29,7 @@ DB_HOST = os.getenv("DB_HOST")
 DB_PORT = int(
     os.getenv(
         "DB_PORT",
-        "5432",
+        "3306",
     )
 )
 DB_NAME = os.getenv("DB_NAME")

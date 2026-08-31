@@ -1,6 +1,20 @@
 .env
+
 __pycache__/
 *.pyc
+
 .venv/
 venv/
+
 .pytest_cache/
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
