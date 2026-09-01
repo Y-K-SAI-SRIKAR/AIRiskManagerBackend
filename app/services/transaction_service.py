@@ -3,7 +3,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.transaction import Transaction
-from app.schemas.transaction import TransactionCreate
+from app.schemas.transaction import (
+    TransactionCreate,
+    TransactionUpdate,
+)
 
 
 # ==========================================================
@@ -96,6 +99,55 @@ def get_transaction(
         )
     )
 
+# ==========================================================
+# Update Transaction
+# ==========================================================
+
+def update_transaction(
+    db: Session,
+    transaction_id: str,
+    transaction_data: TransactionUpdate,
+) -> Transaction | None:
+
+    transaction = db.scalar(
+        select(Transaction).where(
+            Transaction.transaction_id
+            == transaction_id
+        )
+    )
+
+    if transaction is None:
+        return None
+
+    update_data = transaction_data.model_dump(
+        exclude_unset=True
+    )
+
+    if "metadata" in update_data:
+        update_data["transaction_metadata"] = (
+            update_data.pop("metadata")
+        )
+
+    for field, value in update_data.items():
+        setattr(
+            transaction,
+            field,
+            value,
+        )
+
+    try:
+
+        db.commit()
+
+        db.refresh(transaction)
+
+        return transaction
+
+    except Exception:
+
+        db.rollback()
+
+        raise
 
 # ==========================================================
 # Get Transactions
@@ -117,3 +169,52 @@ def get_transactions(
             .limit(limit)
         )
     )
+# ==========================================================
+# Update Transaction
+# ==========================================================
+
+def update_transaction(
+    db: Session,
+    transaction_id: str,
+    transaction_data: TransactionUpdate,
+) -> Transaction | None:
+
+    transaction = db.scalar(
+        select(Transaction).where(
+            Transaction.transaction_id
+            == transaction_id
+        )
+    )
+
+    if transaction is None:
+        return None
+
+    update_data = transaction_data.model_dump(
+        exclude_unset=True
+    )
+
+    if "metadata" in update_data:
+        update_data["transaction_metadata"] = (
+            update_data.pop("metadata")
+        )
+
+    for field, value in update_data.items():
+        setattr(
+            transaction,
+            field,
+            value,
+        )
+
+    try:
+
+        db.commit()
+
+        db.refresh(transaction)
+
+        return transaction
+
+    except Exception:
+
+        db.rollback()
+
+        raise

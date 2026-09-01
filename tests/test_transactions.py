@@ -166,3 +166,89 @@ def test_invalid_transaction():
     )
 
     assert response.status_code == 422
+# ==========================================================
+# Update Transaction
+# ==========================================================
+
+def test_update_transaction():
+
+    transaction_id = unique_transaction_id("UPDATE")
+
+    create_response = client.post(
+        "/api/v1/transactions",
+        json=make_transaction(transaction_id),
+    )
+
+    assert create_response.status_code == 201
+
+    update_response = client.patch(
+        f"/api/v1/transactions/{transaction_id}",
+        json={
+            "amount": 2500.75,
+        },
+    )
+
+    assert update_response.status_code == 200
+
+    data = update_response.json()
+
+    assert data["transaction_id"] == transaction_id
+    assert data["amount"] == 2500.75
+    assert data["customer_id"] == "TEST_CUSTOMER_001"
+
+
+# ==========================================================
+# Update Multiple Transaction Fields
+# ==========================================================
+
+def test_update_transaction_multiple_fields():
+
+    transaction_id = unique_transaction_id("UPDATE-MULTIPLE")
+
+    create_response = client.post(
+        "/api/v1/transactions",
+        json=make_transaction(transaction_id),
+    )
+
+    assert create_response.status_code == 201
+
+    update_response = client.patch(
+        f"/api/v1/transactions/{transaction_id}",
+        json={
+            "amount": 5000,
+            "merchant_category": "electronics",
+            "channel": "mobile",
+        },
+    )
+
+    assert update_response.status_code == 200
+
+    data = update_response.json()
+
+    assert data["amount"] == 5000
+    assert data["merchant_category"] == "electronics"
+    assert data["channel"] == "mobile"
+
+    # Unchanged fields should remain unchanged
+    assert data["customer_id"] == "TEST_CUSTOMER_001"
+    assert data["currency"] == "INR"
+
+
+# ==========================================================
+# Update Transaction Not Found
+# ==========================================================
+
+def test_update_transaction_not_found():
+
+    response = client.patch(
+        "/api/v1/transactions/PYTEST-DOES-NOT-EXIST",
+        json={
+            "amount": 5000,
+        },
+    )
+
+    assert response.status_code == 404
+
+    data = response.json()
+
+    assert data["detail"] == "Transaction not found."

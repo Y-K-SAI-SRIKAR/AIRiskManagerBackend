@@ -61,6 +61,51 @@ class TransactionCreate(BaseModel):
         default_factory=dict
     )
 
+class TransactionUpdate(BaseModel):
+
+    model_config = ConfigDict(
+        extra="forbid"
+    )
+
+    customer_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
+
+    amount: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    currency: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+    )
+
+    merchant_id: str | None = None
+
+    merchant_category: str | None = None
+
+    transaction_type: str | None = None
+
+    timestamp: datetime | None = None
+
+    device_id: str | None = None
+
+    ip_address: str | None = None
+
+    location: str | None = None
+
+    country: str | None = None
+
+    channel: str | None = None
+
+    features: dict[str, Any] | None = None
+
+    metadata: dict[str, Any] | None = None
+
 
 class TransactionResponse(BaseModel):
 
