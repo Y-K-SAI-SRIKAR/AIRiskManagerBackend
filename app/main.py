@@ -42,6 +42,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:6979",
+        "https://loss-less-engine.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
